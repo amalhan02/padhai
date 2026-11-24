@@ -53,6 +53,7 @@ create table public.study_problems (
   pattern         text,
   difficulty      text check (difficulty in ('Easy', 'Medium', 'Hard')),
   block           int,
+  day             int,                                -- the day (session seq) this problem is set for
   solved_on       date,
   rating          text check (rating in ('Struggled', 'OK', 'Easy')),
   reviews_done    int not null default 0 check (reviews_done >= 0),

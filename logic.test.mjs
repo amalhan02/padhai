@@ -16,7 +16,10 @@ test('the bundled plan template expands to 91 sessions, 102 problems and 178 top
   assert.equal(plan.topics.length, 178);
   assert.equal(plan.blocks.length, 13);
   assert.deepEqual(plan.sessions[7], { seq: 8, block: 2, kind: 'DSA', task: 'Two Pointers — 3 problems', extra: 'Clear due reviews first' });
-  assert.deepEqual(plan.problems[0], { name: 'Two Sum', pattern: 'Hash Maps', difficulty: 'Easy', block: 1 });
+  assert.deepEqual(plan.problems[0], { name: 'Two Sum', pattern: 'Hash Maps', difficulty: 'Easy', block: 1, day: 1 });
+  assert.equal(plan.problems.find((x) => x.name === 'Valid Anagram').day, 3);
+  assert.equal(plan.problems.find((x) => x.name === 'Valid Palindrome').day, 8);
+  assert.equal(plan.problems.filter((x) => !x.day).length, 0);
 });
 
 test('date helpers', () => {

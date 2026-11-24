@@ -104,17 +104,17 @@ export function dueCounts(problems, topics, today) {
 // ---- plan templates ------------------------------------------------------------------------
 /**
  * Expand a compact plan template (see plan-go-sde2.json) into rows for the database.
- * Each block lists its days as [kind, task, extra?] and its problems as [name, pattern, E|M|H];
+ * Each block lists its days as [kind, task, extra?] and its problems as [name, pattern, E|M|H, day in block];
  * topics are [category, group, [topic, …]].
  */
 export function expandPlan(tpl) {
   const DIFF = { E: 'Easy', M: 'Medium', H: 'Hard' };
   const out = { minutes_per_day: tpl.minutes_per_day || 120, splits: tpl.splits || {}, blocks: [], sessions: [], problems: [], topics: [] };
   (tpl.blocks || []).forEach((b, i) => {
-    const num = i + 1;
+    const num = i + 1, first = out.sessions.length;
     out.blocks.push({ num, dsa: b.dsa, deep: b.deep, build: b.build, job: b.job });
     for (const [kind, task, extra] of b.days || []) out.sessions.push({ seq: out.sessions.length + 1, block: num, kind, task, extra: extra || null });
-    for (const [name, pattern, d] of b.problems || []) out.problems.push({ name, pattern, difficulty: DIFF[d] || null, block: num });
+    for (const [name, pattern, d, dayInBlock] of b.problems || []) out.problems.push({ name, pattern, difficulty: DIFF[d] || null, block: num, day: dayInBlock ? first + dayInBlock : null });
   });
   for (const [category, grp, items] of tpl.topics || []) for (const topic of items) out.topics.push({ category, grp, topic, sort: out.topics.length + 1 });
   return out;

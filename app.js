@@ -76,6 +76,16 @@ const S = { user: null, profiles: [], plans: [], planId: null, sessions: [], pro
 const plan = () => S.plans.find((p) => p.id === S.planId) || null;
 const pref = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { return; } } };
 const timerKey = () => 'padhai-timer-' + S.planId;
+// the session timer: time already banked, plus the moment it was last started (null while paused)
+function timer() {
+  let v = null;
+  try { v = JSON.parse(pref.get(timerKey()) || 'null'); } catch { v = null; }
+  if (typeof v === 'number') v = { acc: 0, since: v };
+  if (!v) return null;
+  return { ...v, elapsed: v.acc + (v.since ? Date.now() - v.since : 0), paused: !v.since };
+}
+const setTimer = (v) => pref.set(timerKey(), v ? JSON.stringify(v) : null);
+const clock = (sec) => `${Math.floor(Math.abs(sec) / 60)}:${String(Math.abs(sec) % 60).padStart(2, '0')}`;
 
 function toast(msg, ok = false) {
   S.toast = { msg, ok }; render();
@@ -170,21 +180,28 @@ function weekStrip(p, t) {
 
 function quests(st, t, due) {
   const q = [{ label: "Finish today's session", n: st.doneToday ? 1 : 0, of: 1 }];
-  const s = st.next, solved = S.problems.filter((x) => x.solved_on === t).length;
-  const left = s ? S.problems.filter((x) => x.block === s.block && !x.solved_on).length : 0;
-  if (solved || (s && s.kind === 'DSA' && left)) q.push({ label: 'Solve 3 new problems', n: Math.min(3, solved), of: Math.max(1, Math.min(3, solved + left)) });
+  const cur = (st.doneToday && S.sessions.filter((x) => x.done_on === t).pop()) || st.next;
+  const mine = cur ? S.problems.filter((x) => x.day === cur.seq) : [];
+  if (mine.length) q.push({ label: `Solve Day ${cur.seq}'s problems`, n: mine.filter((x) => x.solved_on).length, of: mine.length });
   const reviewed = S.problems.filter((x) => x.last_review_on === t).length + S.topics.filter((x) => x.last_review_on === t).length;
   if (reviewed || due) q.push({ label: 'Clear your reviews', n: reviewed, of: reviewed + due });
   return q;
 }
 
+const probLink = (x) => (x.link ? (/^https?:/.test(x.link) ? x.link : 'https://' + x.link) : 'https://leetcode.com/problemset/?search=' + encodeURIComponent(x.name));
+const probRow = (x) => `
+    <div class="row ${x.solved_on ? 'ok' : ''}"><div class="grow"><div class="t">${esc(x.name)}</div>
+      <div class="small mute">${esc(x.pattern || '')}, ${esc(x.difficulty || '')}. <a href="${esc(probLink(x))}" target="_blank" rel="noopener">Open problem</a></div></div>
+      ${x.solved_on ? '<div class="tick">✓</div>' : `<button class="press mint sm" data-a="logProblem" data-id="${x.id}">Solved</button>`}</div>`;
+
 function viewToday() {
   const p = plan(), t = today(), st = L.planStatus(p, S.sessions, t), s = st.next;
   const dueP = S.problems.filter((x) => L.problemStatus(x, t).status === 'due');
   const dueT = S.topics.filter((x) => L.topicStatus(x, t).status === 'due');
-  const running = !!pref.get(timerKey()), rest = st.started && !st.todayIsStudy;
+  const tm = timer(), running = !!tm, rest = st.started && !st.todayIsStudy;
   const doneView = st.doneToday && !S.catchUp && !running;
-  const todo = s ? S.problems.filter((x) => x.block === s.block && !x.solved_on) : [];
+  const mine = s ? S.problems.filter((x) => x.day === s.seq) : [];
+  const older = s ? S.problems.filter((x) => !x.solved_on && x.day && x.day < s.seq) : [];
   const groups = {};
   for (const x of dueT) (groups[`${x.category}: ${x.grp}`] ||= []).push(x);
 
@@ -198,7 +215,7 @@ function viewToday() {
     <div class="when"><span class="pill k-${esc(s.kind)}">${esc(s.kind)}</span>${!st.started ? `Starts ${fmt(p.start_date)}` : rest ? 'Rest day' : fmt(t)}</div>
     <div class="task">${esc(s.task)}</div>
     ${s.extra ? `<p class="extra">${esc(s.extra)}</p>` : ''}
-    <button class="press" data-a="focus">${running ? 'Continue session' : !st.started ? 'Start early' : rest ? 'Study anyway' : "Start today's session"}</button>`;
+    <button class="press" data-a="focus">${tm ? (tm.paused ? `Resume session, ${clock(p.minutes_per_day * 60 - Math.floor(tm.elapsed / 1000))} left` : 'Continue session') : !st.started ? 'Start early' : rest ? 'Study anyway' : "Start today's session"}</button>`;
 
   let note = '';
   if (store.demo) note += `<div class="note">Demo mode: nothing is saved to the database yet.</div>`;
@@ -222,13 +239,14 @@ function viewToday() {
     <div class="row"><div class="grow"><div class="t">${esc(g)}</div><div class="small mute">${esc(xs.map((x) => x.topic).join(', '))}</div></div>
       <button class="press mint sm" data-a="reviewTopics" data-ids="${xs.map((x) => x.id).join(',')}">Revised</button></div>`).join('')}</div>` : ''}
 
-  ${s && !doneView && todo.length ? `<h2>Problems for this block (${todo.length} left)</h2><div class="card">${todo.map((x) => `
-    <div class="row"><div class="grow"><div class="t">${esc(x.name)}</div><div class="small mute">${esc(x.pattern || '')}, ${esc(x.difficulty || '')}</div></div>
-      <button class="press mint sm" data-a="logProblem" data-id="${x.id}">Solved</button></div>`).join('')}</div>` : ''}`;
+  ${s && !doneView && mine.length ? `<h2>Day ${s.seq} problems (${mine.filter((x) => x.solved_on).length} of ${mine.length} solved)</h2><div class="card">${mine.map(probRow).join('')}</div>` : ''}
+  ${s && !doneView && older.length ? `<h2>Left over from earlier days (${older.length})</h2><div class="card">${older.map(probRow).join('')}</div>` : ''}`;
 }
 
 function viewJourney() {
   const p = plan(), t = today(), st = L.planStatus(p, S.sessions, t), when = schedule(p, st, t);
+  const probs = new Map();
+  for (const x of S.problems) if (x.day) probs.set(x.day, [...(probs.get(x.day) || []), x.name]);
   const nums = [...new Set(S.sessions.map((s) => s.block))].sort((a, b) => a - b);
   return `<div class="note"><b>${st.doneCount} of ${st.total} days done.</b> Finish line: ${fmt(st.projectedFinish)}${st.slipDays ? ` (planned ${short(st.plannedFinish)})` : ''}.
     Tap any day to see it, tick it or change it.</div>
@@ -240,7 +258,8 @@ function viewJourney() {
       <button class="step ${s.done_on ? 'done' : ''} ${now ? 'now' : ''}" ${now ? 'id="now"' : ''} data-a="openDay" data-id="${s.id}" aria-label="Day ${s.seq}">
         <span class="node">${s.done_on ? '✓' : s.seq}</span>
         <span class="grow"><span class="small mute">Day ${s.seq}, ${fmt(when.get(s.id))} <span class="pill k-${esc(s.kind)}">${esc(s.kind)}</span></span>
-          <span class="t">${esc(s.task)}</span></span></button>`; }).join('')}</div>`;
+          <span class="t">${esc(s.task)}</span>
+          ${probs.has(s.seq) ? `<span class="small mute">${esc(probs.get(s.seq).join(', '))}</span>` : ''}</span></button>`; }).join('')}</div>`;
   }).join('')}
   <div style="height:14px"></div><button class="press plain" data-a="addSession">Add a day</button>
   ${st.next ? `<button class="press sm fab" data-a="jumpNow">Go to Day ${st.next.seq}</button>` : ''}`;
@@ -248,12 +267,13 @@ function viewJourney() {
 
 function viewDay() {
   const p = plan(), t = today(), st = L.planStatus(p, S.sessions, t), s = S.sessions.find((x) => x.id === S.detail);
-  const split = (p.splits || {})[s.kind], b = (p.blocks || []).find((x) => x.num === s.block) || {};
+  const split = (p.splits || {})[s.kind], b = (p.blocks || []).find((x) => x.num === s.block) || {}, probs = S.problems.filter((x) => x.day === s.seq);
   return `<div class="sheet-bg" data-a="closeDayBg"><div class="sheet" role="dialog" aria-label="Day ${s.seq}">
     <div class="head"><h3 class="grow">Day ${s.seq} <span class="pill k-${esc(s.kind)}">${esc(s.kind)}</span></h3><button class="press plain sm" data-a="closeDay">Close</button></div>
     <p class="small mute">${s.done_on ? 'Done ' + fmt(s.done_on) : 'Planned for ' + fmt(schedule(p, st, t).get(s.id))}, Block ${s.block}${b.dsa ? ': ' + esc(b.dsa) : ''}</p>
     <div class="note"><div class="t">${esc(s.task)}</div>${s.extra ? `<div class="small mute" style="margin-top:6px">${esc(s.extra)}</div>` : ''}</div>
     ${split ? `<div class="note small"><b>How to spend the ${p.minutes_per_day} minutes</b><br>${esc(split)}</div>` : ''}
+    ${probs.length ? `<div class="note small"><b>Problems for this day</b>${probs.map((x) => `<br>${x.solved_on ? '✓' : '○'} ${esc(x.name)} <span class="mute">(${esc(x.difficulty || '')})</span>`).join('')}</div>` : ''}
     ${s.notes ? `<div class="note small"><b>Your notes</b><br>${esc(s.notes)}</div>` : ''}
     <button class="press ${s.done_on ? 'plain' : 'mint'}" data-a="toggleSession" data-id="${s.id}">${s.done_on ? 'Mark as not done' : 'Mark as done'}</button>
     <button class="press plain" data-a="editSession" data-id="${s.id}">Edit this day</button>
@@ -263,16 +283,20 @@ function viewDay() {
 function viewFocus() {
   const p = plan(), st = L.planStatus(p, S.sessions, today()), s = st.next;
   const steps = String((p.splits || {})[s.kind] || '').split(/\.\s+(?=\d)/).map((x) => x.replace(/\.$/, '')).filter(Boolean);
+  const probs = S.problems.filter((x) => x.day === s.seq), paused = (timer() || {}).paused;
   return `<div class="full"><div class="in">
     <div class="small" style="color:#ffffffa6">Day ${s.seq} of ${st.total} <span class="pill k-${esc(s.kind)}">${esc(s.kind)}</span></div>
     <div class="ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="54"/><circle class="arc" id="arc" cx="60" cy="60" r="54" stroke-dasharray="339.3" stroke-dashoffset="0"/></svg>
       <div class="time"><div id="timer">--:--</div><span id="timerLabel">left</span></div></div>
     <div class="task">${esc(s.task)}</div>
+    ${probs.length ? `<ul class="how">${probs.map((x) => `<li>${x.solved_on ? '✓ ' : ''}${esc(x.name)}</li>`).join('')}</ul>` : ''}
     ${steps.length ? `<ul class="how">${steps.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
     <div class="spacer"></div>
+    <button class="press plain" data-a="${paused ? 'timerResume' : 'timerPause'}">${paused ? 'Resume timer' : 'Pause timer'}</button>
+    <div style="height:14px"></div>
     <button class="press mint" data-a="doneSession" data-id="${s.id}">Finish Day ${s.seq}</button>
-    <button class="alt" data-a="leaveFocus">Back to the app (timer keeps running)</button>
-    <button class="alt" data-a="timerStop">Stop and reset the timer</button>
+    <button class="alt" data-a="leaveFocus">Back to the app${paused ? '' : ' (timer keeps running)'}</button>
+    <button class="alt" data-a="timerStop">Reset the timer</button>
   </div></div>`;
 }
 
@@ -317,7 +341,7 @@ function viewPractice() {
   <div class="card">${shown.length ? shown.map(({ x, s }) => `
     <button class="row" data-a="editProblem" data-id="${x.id}">
       <span class="grow"><span class="t">${esc(x.name)}</span>
-        <div class="small mute">Block ${x.block || '–'}, ${esc(x.pattern || '')}, ${esc(x.difficulty || '')}${s.next ? ', review on ' + short(s.next) : ''}</div></span>
+        <div class="small mute">Day ${x.day || '–'}, ${esc(x.pattern || '')}, ${esc(x.difficulty || '')}${s.next ? ', review on ' + short(s.next) : ''}</div></span>
       ${s.status === 'todo' ? '' : `<span class="pill s-${s.status}">${s.status}</span>`}</button>`).join('') : '<p class="mute" style="padding:14px 0">Nothing here.</p>'}</div>`;
 }
 
@@ -359,7 +383,7 @@ function viewMe() {
 // ------------------------------------------------------------------ edit sheets
 const F = {
   session: [['kind', 'Type', 'select', KINDS], ['block', 'Block', 'number'], ['task', 'What to do', 'textarea'], ['extra', 'Extra', 'textarea'], ['done_on', 'Done on', 'date'], ['notes', 'Your notes', 'textarea']],
-  problem: [['name', 'Problem', 'text'], ['pattern', 'Pattern', 'text'], ['difficulty', 'Difficulty', 'select', ['', 'Easy', 'Medium', 'Hard']], ['block', 'Block', 'number'],
+  problem: [['name', 'Problem', 'text'], ['pattern', 'Pattern', 'text'], ['difficulty', 'Difficulty', 'select', ['', 'Easy', 'Medium', 'Hard']], ['block', 'Block', 'number'], ['day', 'Day', 'number'],
     ['solved_on', 'Date solved', 'date'], ['rating', 'How it went', 'select', ['', 'Struggled', 'OK', 'Easy']], ['reviews_done', 'Reviews done', 'number'], ['last_review_on', 'Last review', 'date'], ['link', 'Link', 'text'], ['notes', 'Notes', 'textarea']],
   topic: [['category', 'Category', 'text'], ['grp', 'Group', 'text'], ['topic', 'Topic', 'text'], ['learned_on', 'Learned on', 'date'], ['reviews_done', 'Reviews done', 'number'],
     ['last_review_on', 'Last review', 'date'], ['confidence', 'Confidence (1–5)', 'select', ['', 1, 2, 3, 4, 5]], ['notes', 'Notes', 'textarea']],
@@ -433,9 +457,11 @@ const A = {
   closeDay() { S.detail = null; },
   jumpNow() { const el = document.getElementById('now'); if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); return Promise.resolve(); },
   toggleDay(d) { const v = new Set(S.sheet.values.study_days || []); const n = Number(d.d); v.has(n) ? v.delete(n) : v.add(n); S.sheet.values.study_days = [...v]; },
-  focus() { if (!pref.get(timerKey())) pref.set(timerKey(), String(Date.now())); S.focus = true; },
+  focus() { if (!timer()) setTimer({ acc: 0, since: Date.now() }); S.focus = true; },
   leaveFocus() { S.focus = false; },
-  timerStop() { pref.set(timerKey(), null); S.focus = false; },
+  timerPause() { const tm = timer(); if (tm && !tm.paused) setTimer({ acc: tm.elapsed, since: null }); },
+  timerResume() { const tm = timer(); if (tm && tm.paused) setTimer({ acc: tm.acc, since: Date.now() }); },
+  timerStop() { setTimer(null); S.focus = false; },
   closeParty() { S.party = null; S.tab = 'today'; },
 
   doneSession: (d) => run(async () => {
@@ -449,7 +475,7 @@ const A = {
   toggleSession: (d) => run(async () => { const s = S.sessions.find((x) => x.id === Number(d.id)); await save('sessions', s.id, { done_on: s.done_on ? null : today() }); }),
   logProblem(d) {
     const x = S.problems.find((p) => p.id === Number(d.id));
-    openSheet(x.name, [F.problem[5], F.problem[8], F.problem[9]], { rating: 'OK', link: x.link, notes: x.notes },
+    openSheet(x.name, [F.problem[6], F.problem[9], F.problem[10]], { rating: 'OK', link: x.link, notes: x.notes },
       async (v) => { await save('problems', x.id, { ...v, rating: v.rating || 'OK', solved_on: today(), reviews_done: 0, last_review_on: null }); toast('Solved. It will come back for review.', true); });
     S.sheet.note = 'Be honest about how it went: it decides when this problem comes back.';
   },
@@ -462,7 +488,7 @@ const A = {
   editTopic: (d) => editRow('topics', 'Topic', F.topic, d.id),
   editMock: (d) => editRow('mocks', 'Mock', F.mock, d.id),
   addSession() { const last = S.sessions[S.sessions.length - 1]; addRow('sessions', 'New day', F.session.slice(0, 4), { seq: (last ? last.seq : 0) + 1, block: last ? last.block : 1, kind: 'DSA', task: '' }); },
-  addProblem() { const st = L.planStatus(plan(), S.sessions, today()); addRow('problems', 'New problem', F.problem.slice(0, 4), { name: '', block: st.next ? st.next.block : null, reviews_done: 0 }); },
+  addProblem() { const st = L.planStatus(plan(), S.sessions, today()); addRow('problems', 'New problem', F.problem.slice(0, 5), { name: '', block: st.next ? st.next.block : null, day: st.next ? st.next.seq : null, reviews_done: 0 }); },
   addTopic() { addRow('topics', 'New topic', F.topic.slice(0, 3), { category: S.openCat || '', grp: '', topic: '', sort: 9999, reviews_done: 0 }); },
   addMock() { addRow('mocks', 'Log a mock', F.mock, { done_on: today(), kind: 'Coding' }); },
 
@@ -540,9 +566,10 @@ function render() {
 function tick() {
   const el = document.getElementById('timer'), p = plan();
   if (!el || !p) return;
-  const total = p.minutes_per_day * 60, left = total - Math.floor((Date.now() - Number(pref.get(timerKey()))) / 1000), a = Math.abs(left);
-  el.textContent = `${Math.floor(a / 60)}:${String(a % 60).padStart(2, '0')}`;
-  document.getElementById('timerLabel').textContent = left < 0 ? 'over, well done' : 'left';
+  const tm = timer() || { elapsed: 0, paused: true };
+  const total = p.minutes_per_day * 60, left = total - Math.floor(tm.elapsed / 1000);
+  el.textContent = clock(left);
+  document.getElementById('timerLabel').textContent = tm.paused ? 'paused' : left < 0 ? 'over, well done' : 'left';
   document.getElementById('arc').style.strokeDashoffset = String(339.3 * Math.min(1, Math.max(0, 1 - left / total)));
 }
 setInterval(tick, 1000);
