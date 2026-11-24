@@ -1,0 +1,33 @@
+name: Evening study reminder
+
+on:
+  schedule:
+    # 14:30 UTC = 8:00 pm India time, every day. The script itself skips rest days and days already done.
+    - cron: "30 14 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the emails instead of sending them"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  nudge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --omit=dev --no-audit --no-fund
+      - run: node nudge.mjs
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          APP_URL: ${{ vars.APP_URL }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
